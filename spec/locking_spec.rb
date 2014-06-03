@@ -83,6 +83,29 @@ describe 'Locking' do
 
         expect(redis.get('testing:count').to_i).to eq(n)
       end
+
+      it 'locks and relocks' do
+        threads = []
+
+        n.times do
+          threads << Thread.new do
+            redis = Redis.new(:db => 2)
+            lock = Redis::Lock.new(redis, key)
+
+            3.times do
+              lock.lock(n*3*2) do
+                count = redis.get('testing:count').to_i
+                redis.set('testing:count', count + 1)
+              end
+              sleep rand
+            end
+          end
+        end
+
+        threads.each(&:join)
+
+        expect(redis.get('testing:count').to_i).to eq(n*3)
+      end
     end
   end
 
@@ -129,6 +152,29 @@ describe 'Locking' do
         pids.each { |pid| Process.waitpid(pid) }
 
         expect(redis.get('testing:count').to_i).to eq(n)
+      end
+
+      it 'locks and relocks' do
+        pids = []
+
+        n.times do
+          pids << fork do
+            redis = Redis.new(:db => 2)
+            lock = Redis::Lock.new(redis, key)
+
+            3.times do
+              lock.lock(n*3*2) do
+                count = redis.get('testing:count').to_i
+                redis.set('testing:count', count + 1)
+              end
+              sleep rand
+            end
+          end
+        end
+
+        pids.each { |pid| Process.waitpid(pid) }
+
+        expect(redis.get('testing:count').to_i).to eq(n*3)
       end
     end
   end

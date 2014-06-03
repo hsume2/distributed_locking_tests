@@ -1,24 +1,8 @@
 require 'spec_helper'
 
-Redis::Lock.class_eval do
-  def check( now = Time.now.to_i )
-    # read both in a transaction in a multi to ensure we have a consistent view
-    result = redis.multi do |multi|
-      multi.get( okey )
-      multi.get( xkey )
-    end
-    result = result.compact
-    result && result.size == 2 && !is_deleteable?( result[0], result[1], now )
-  end
-end
-
 PROCESSES = [1, 2, 10, 50]
 
-describe 'Locking' do
-  let(:redis) { Redis.new(:db => 2) }
-  let(:key) { 'testing'}
-  let(:lock) { Redis::Lock.new(redis, key, :life => 5) }
-
+shared_examples 'a proper locking implementation' do
   before(:each) do
     redis.flushdb
   end
@@ -46,8 +30,7 @@ describe 'Locking' do
 
         n.times do
           threads << Thread.new do
-            redis = Redis.new(:db => 2)
-            lock = Redis::Lock.new(redis, key)
+            lock, redis = lock_factory.call
 
             lock.lock do
               count = redis.get('testing:count').to_i
@@ -66,8 +49,7 @@ describe 'Locking' do
 
         n.times do
           threads << Thread.new do
-            redis = Redis.new(:db => 2)
-            lock = Redis::Lock.new(redis, key)
+            lock, redis = lock_factory.call
 
             lock.lock(n*3*2) do # Acquisition timeout of n processes * 3 seconds for sleeps (max) * 2 (just to be safe)
               sleep rand
@@ -89,8 +71,7 @@ describe 'Locking' do
 
         n.times do
           threads << Thread.new do
-            redis = Redis.new(:db => 2)
-            lock = Redis::Lock.new(redis, key)
+            lock, redis = lock_factory.call
 
             3.times do
               lock.lock(n*3*2) do
@@ -116,8 +97,7 @@ describe 'Locking' do
 
         n.times do
           pids << fork do
-            redis = Redis.new(:db => 2)
-            lock = Redis::Lock.new(redis, key)
+            lock, redis = lock_factory.call
 
             lock.lock do
               count = redis.get('testing:count').to_i
@@ -136,8 +116,7 @@ describe 'Locking' do
 
         n.times do
           pids << fork do
-            redis = Redis.new(:db => 2)
-            lock = Redis::Lock.new(redis, key)
+            lock, redis = lock_factory.call
 
             lock.lock(n*3*2) do # Acquisition timeout of n processes * 3 seconds for sleeps (max) * 2 (just to be safe)
               sleep rand
@@ -159,8 +138,7 @@ describe 'Locking' do
 
         n.times do
           pids << fork do
-            redis = Redis.new(:db => 2)
-            lock = Redis::Lock.new(redis, key)
+            lock, redis = lock_factory.call
 
             3.times do
               lock.lock(n*3*2) do
@@ -183,8 +161,7 @@ describe 'Locking' do
     pids = []
 
     pids << fork do
-      redis = Redis.new(:db => 2)
-      lock = Redis::Lock.new(redis, key, :life => 5)
+      lock, redis = lock_factory.call
       lock.lock do
         puts "[#{Process.pid}] Acquired lock"
         sleep 10
@@ -224,4 +201,31 @@ describe 'Locking' do
 
     expect(lock.check).to be_falsy
   end
+end
+
+describe 'mlanett/redis-lock' do
+  require 'redis-lock'
+
+  Redis::Lock.class_eval do
+    def check( now = Time.now.to_i )
+      # read both in a transaction in a multi to ensure we have a consistent view
+      result = redis.multi do |multi|
+        multi.get( okey )
+        multi.get( xkey )
+      end
+      result = result.compact
+      result && result.size == 2 && !is_deleteable?( result[0], result[1], now )
+    end
+  end
+
+  let(:lock_factory) {
+    lambda {
+      redis = Redis.new(:db => 2)
+      [Redis::Lock.new(redis, 'testing', :life => 5), redis]
+    }
+  }
+  let(:lock) { lock_factory.call.first }
+  let(:redis) { lock.redis }
+
+  it_behaves_like 'a proper locking implementation'
 end

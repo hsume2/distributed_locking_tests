@@ -4,23 +4,15 @@ PROCESSES = [1, 2, 10, 50]
 
 shared_examples 'a proper locking implementation' do
   before(:each) do
-    redis.flushdb
+    redis_client.flushdb
   end
 
   it 'acquires lock' do
     locked = false
-    lock.lock do
+    invoke_lock.call do |lock, redis|
       locked = true
     end
     expect(locked).to be_truthy
-  end
-
-  it 'acquires and releases lock' do
-    expect(lock.locked?).to be_falsy
-    lock.lock do
-      expect(lock.locked?).to be_truthy
-    end
-    expect(lock.locked?).to be_falsy
   end
 
   PROCESSES.each do |n|
@@ -30,9 +22,7 @@ shared_examples 'a proper locking implementation' do
 
         n.times do
           threads << Thread.new do
-            lock, redis = lock_factory.call
-
-            lock.lock do
+            invoke_lock.call do |lock, redis|
               count = redis.get('testing:count').to_i
               redis.set('testing:count', count + 1)
             end
@@ -41,7 +31,7 @@ shared_examples 'a proper locking implementation' do
 
         threads.each(&:join)
 
-        expect(redis.get('testing:count').to_i).to eq(n)
+        expect(redis_client.get('testing:count').to_i).to eq(n)
       end
 
       it 'increments with a slow worker' do
@@ -49,9 +39,9 @@ shared_examples 'a proper locking implementation' do
 
         n.times do
           threads << Thread.new do
-            lock, redis = lock_factory.call
+            acquisition_timeout = n*3*2 # Acquisition timeout of n processes * 3 seconds for sleeps (max) * 2 (just to be safe)
 
-            lock.lock(n*3*2) do # Acquisition timeout of n processes * 3 seconds for sleeps (max) * 2 (just to be safe)
+            invoke_lock.call(acquisition_timeout) do |lock, redis|
               sleep rand
               count = redis.get('testing:count').to_i
               sleep rand
@@ -63,7 +53,7 @@ shared_examples 'a proper locking implementation' do
 
         threads.each(&:join)
 
-        expect(redis.get('testing:count').to_i).to eq(n)
+        expect(redis_client.get('testing:count').to_i).to eq(n)
       end
 
       it 'locks and relocks' do
@@ -71,21 +61,21 @@ shared_examples 'a proper locking implementation' do
 
         n.times do
           threads << Thread.new do
-            lock, redis = lock_factory.call
+            acquisition_timeout = n*3*2
 
             3.times do
-              lock.lock(n*3*2) do
+              invoke_lock.call(acquisition_timeout) do |lock, redis|
                 count = redis.get('testing:count').to_i
                 redis.set('testing:count', count + 1)
+                sleep rand
               end
-              sleep rand
             end
           end
         end
 
         threads.each(&:join)
 
-        expect(redis.get('testing:count').to_i).to eq(n*3)
+        expect(redis_client.get('testing:count').to_i).to eq(n*3)
       end
     end
   end
@@ -97,9 +87,7 @@ shared_examples 'a proper locking implementation' do
 
         n.times do
           pids << fork do
-            lock, redis = lock_factory.call
-
-            lock.lock do
+            invoke_lock.call do |lock, redis|
               count = redis.get('testing:count').to_i
               redis.set('testing:count', count + 1)
             end
@@ -108,7 +96,7 @@ shared_examples 'a proper locking implementation' do
 
         pids.each { |pid| Process.waitpid(pid) }
 
-        expect(redis.get('testing:count').to_i).to eq(n)
+        expect(redis_client.get('testing:count').to_i).to eq(n)
       end
 
       it 'increments with a slow worker' do
@@ -116,9 +104,9 @@ shared_examples 'a proper locking implementation' do
 
         n.times do
           pids << fork do
-            lock, redis = lock_factory.call
+            acquisition_timeout = n*3*2 # Acquisition timeout of n processes * 3 seconds for sleeps (max) * 2 (just to be safe)
 
-            lock.lock(n*3*2) do # Acquisition timeout of n processes * 3 seconds for sleeps (max) * 2 (just to be safe)
+            invoke_lock.call(acquisition_timeout) do |lock, redis|
               sleep rand
               count = redis.get('testing:count').to_i
               sleep rand
@@ -130,7 +118,7 @@ shared_examples 'a proper locking implementation' do
 
         pids.each { |pid| Process.waitpid(pid) }
 
-        expect(redis.get('testing:count').to_i).to eq(n)
+        expect(redis_client.get('testing:count').to_i).to eq(n)
       end
 
       it 'locks and relocks' do
@@ -138,10 +126,10 @@ shared_examples 'a proper locking implementation' do
 
         n.times do
           pids << fork do
-            lock, redis = lock_factory.call
+            acquisition_timeout = n*3*2 # Acquisition timeout of n processes * 3 seconds for sleeps (max) * 2 (just to be safe)
 
             3.times do
-              lock.lock(n*3*2) do
+              invoke_lock.call(acquisition_timeout) do |lock, redis|
                 count = redis.get('testing:count').to_i
                 redis.set('testing:count', count + 1)
               end
@@ -152,7 +140,7 @@ shared_examples 'a proper locking implementation' do
 
         pids.each { |pid| Process.waitpid(pid) }
 
-        expect(redis.get('testing:count').to_i).to eq(n*3)
+        expect(redis_client.get('testing:count').to_i).to eq(n*3)
       end
     end
   end
@@ -161,8 +149,7 @@ shared_examples 'a proper locking implementation' do
     pids = []
 
     pids << fork do
-      lock, redis = lock_factory.call
-      lock.lock do
+      invoke_lock.call do |lock, redis|
         puts "[#{Process.pid}] Acquired lock"
         sleep 10
       end
@@ -170,7 +157,7 @@ shared_examples 'a proper locking implementation' do
     end
 
     3.times do
-      if lock.check
+      if check_lock.call
         puts "[#{Process.pid}] Sees that lock is acquired"
         pids.each { |pid|
           puts "[#{Process.pid}] Killing #{pid}"
@@ -186,10 +173,10 @@ shared_examples 'a proper locking implementation' do
 
     pids.each { |pid| Process.waitpid(pid) }
 
-    expect(lock.check).to be_truthy
+    expect(check_lock.call).to be_truthy
 
     10.times do
-      if lock.check
+      if check_lock.call
         puts "[#{Process.pid}] Waiting for lock to expire"
       else
         puts "[#{Process.pid}] Lock expired"
@@ -199,7 +186,7 @@ shared_examples 'a proper locking implementation' do
       sleep 1
     end
 
-    expect(lock.check).to be_falsy
+    expect(check_lock.call).to be_falsy
   end
 end
 
@@ -218,14 +205,53 @@ describe 'mlanett/redis-lock' do
     end
   end
 
-  let(:lock_factory) {
-    lambda {
+  let(:redis_client) { Redis.new(:db => 2) }
+  let(:invoke_lock) {
+    lambda { |*args, &block|
+      acquisition_timeout = args.first || 1
       redis = Redis.new(:db => 2)
-      [Redis::Lock.new(redis, 'testing', :life => 5), redis]
+      lock = Redis::Lock.new(redis, 'testing', :life => 5)
+      lock.lock(acquisition_timeout) do
+        block.call(lock, redis)
+      end
     }
   }
-  let(:lock) { lock_factory.call.first }
-  let(:redis) { lock.redis }
+  let(:check_lock) {
+    lambda {
+      redis = Redis.new(:db => 2)
+      lock = Redis::Lock.new(redis, 'testing', :life => 5)
+      lock.check
+    }
+  }
+
+  it_behaves_like 'a proper locking implementation'
+end
+
+describe 'kenn/redis-mutex' do
+  require 'redis-mutex'
+
+  let(:redis_client) { Redis.new(:db => 2) }
+  let(:invoke_lock) {
+    lambda { |*args, &block|
+      acquisition_timeout = args.first || 1
+      redis = Redis.new(:db => 2)
+      Redis::Classy.db = redis
+      Redis::Mutex.db = redis
+      mutex = Redis::Mutex.new('testing', :block => acquisition_timeout, :expire => 5)
+      mutex.with_lock do
+        block.call(mutex, redis)
+      end
+    }
+  }
+  let(:check_lock) {
+    lambda {
+      redis = Redis.new(:db => 2)
+      Redis::Classy.db = redis
+      Redis::Mutex.db = redis
+      mutex = Redis::Mutex.new('testing', :expire => 5)
+      mutex.locked?
+    }
+  }
 
   it_behaves_like 'a proper locking implementation'
 end

@@ -32,6 +32,12 @@ GEM
     rb-inotify (0.9.4)
       ffi (>= 0.5.0)
     redis (3.0.7)
+    redis-classy (1.2.0)
+      redis-namespace (~> 1.0)
+    redis-mutex (3.0.0)
+      redis-classy (~> 1.2)
+    redis-namespace (1.4.1)
+      redis (~> 3.0.4)
     rspec (3.0.0)
       rspec-core (~> 3.0.0)
       rspec-expectations (~> 3.0.0)
@@ -55,4 +61,5 @@ DEPENDENCIES
   guard
   guard-rspec
   mlanett-redis-lock
+  redis-mutex
   rspec

@@ -48,7 +48,8 @@ describe 'Locking' do
             lock = Redis::Lock.new(redis, key)
 
             lock.lock do
-              redis.incr('testing:count')
+              count = redis.get('testing:count').to_i
+              redis.set('testing:count', count + 1)
             end
           end
         end
@@ -71,7 +72,8 @@ describe 'Locking' do
             lock = Redis::Lock.new(redis, key)
 
             lock.lock do
-              redis.incr('testing:count')
+              count = redis.get('testing:count').to_i
+              redis.set('testing:count', count + 1)
             end
           end
         end

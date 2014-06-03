@@ -255,3 +255,37 @@ describe 'kenn/redis-mutex' do
 
   it_behaves_like 'a proper locking implementation'
 end
+
+describe 'SETNX locking' do # See http://redis.io/commands/setnx
+  let(:redis_client) { Redis.new(:db => 2) }
+  let(:setnx) {
+    Class.new do
+      include SETNX::Locking
+    end
+  }
+  let(:invoke_lock) {
+    lambda { |*args, &block|
+      acquisition_timeout = args.first || 1
+      redis = Redis.new(:db => 2)
+      lock = setnx.new
+
+      start_at = Time.now
+      while Time.now - start_at < acquisition_timeout
+        lock.with_lock(redis, 'testing', 5) do
+          block.call(lock, redis)
+          lock.clear_lock(redis, 'testing')
+        end and break
+        sleep 0.1
+      end
+    }
+  }
+  let(:check_lock) {
+    lambda {
+      redis = Redis.new(:db => 2)
+      lock = setnx.new
+      lock.check_lock(redis, 'testing', 5)
+    }
+  }
+
+  it_behaves_like 'a proper locking implementation'
+end

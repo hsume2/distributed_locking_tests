@@ -12,6 +12,8 @@ Redis::Lock.class_eval do
   end
 end
 
+PROCESSES = [1, 2, 10, 50]
+
 describe 'Locking' do
   let(:redis) { Redis.new(:db => 2) }
   let(:key) { 'testing'}
@@ -37,9 +39,9 @@ describe 'Locking' do
     expect(lock.locked?).to be_falsy
   end
 
-  [2, 10, 50].each do |n|
+  PROCESSES.each do |n|
     describe "for #{n} threads" do
-      it 'acquires lock' do
+      it 'increments safely' do
         threads = []
 
         n.times do
@@ -58,12 +60,35 @@ describe 'Locking' do
 
         expect(redis.get('testing:count').to_i).to eq(n)
       end
+
+      it 'increments with a slow worker' do
+        threads = []
+
+        n.times do
+          threads << Thread.new do
+            redis = Redis.new(:db => 2)
+            lock = Redis::Lock.new(redis, key)
+
+            lock.lock(n*3*2) do # Acquisition timeout of n processes * 3 seconds for sleeps (max) * 2 (just to be safe)
+              sleep rand
+              count = redis.get('testing:count').to_i
+              sleep rand
+              redis.set('testing:count', count + 1)
+              sleep rand
+            end
+          end
+        end
+
+        threads.each(&:join)
+
+        expect(redis.get('testing:count').to_i).to eq(n)
+      end
     end
   end
 
-  [2, 10, 50].each do |n|
-    describe "for #{n} threads" do
-      it 'acquires lock' do
+  PROCESSES.each do |n|
+    describe "for #{n} processes" do
+      it 'increments safely' do
         pids = []
 
         n.times do
@@ -74,6 +99,29 @@ describe 'Locking' do
             lock.lock do
               count = redis.get('testing:count').to_i
               redis.set('testing:count', count + 1)
+            end
+          end
+        end
+
+        pids.each { |pid| Process.waitpid(pid) }
+
+        expect(redis.get('testing:count').to_i).to eq(n)
+      end
+
+      it 'increments with a slow worker' do
+        pids = []
+
+        n.times do
+          pids << fork do
+            redis = Redis.new(:db => 2)
+            lock = Redis::Lock.new(redis, key)
+
+            lock.lock(n*3*2) do # Acquisition timeout of n processes * 3 seconds for sleeps (max) * 2 (just to be safe)
+              sleep rand
+              count = redis.get('testing:count').to_i
+              sleep rand
+              redis.set('testing:count', count + 1)
+              sleep rand
             end
           end
         end

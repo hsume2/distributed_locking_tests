@@ -288,4 +288,126 @@ describe 'SETNX locking' do # See http://redis.io/commands/setnx
   }
 
   it_behaves_like 'a proper locking implementation'
+
+  it 'does not race' do
+    SETNX::Locking::Lock.class_eval do
+      def execute(&block)
+        reply = client.setnx(lock_key, next_timeout)
+        result = if reply
+          yield if block_given?
+        else
+          value = client.get(lock_key)
+          if value.nil?
+            reply = client.setnx(lock_key, next_timeout)
+            yield if reply && block_given?
+          elsif timeout_expired?(value)
+            if Thread.current[:index] == 0
+              puts "[#{Process.pid}][#{Thread.current[:index]}] Sleep for others to get here"
+              sleep 1
+            else
+              puts "[#{Process.pid}][#{Thread.current[:index]}] Sleep to extend the timeout"
+              sleep 5
+            end
+            original_timeout = client.getset(lock_key, next_timeout)
+            if original_timeout.nil? || timeout_expired?(original_timeout)
+              yield if block_given?
+            end
+          end
+        end
+        client.expire(lock_key, lock_timeout) if reply
+        result
+      end
+    end
+
+    pids = []
+
+    pids << fork do
+      invoke_lock.call do |lock, redis|
+        puts "[#{Process.pid}] Acquired lock"
+        sleep 10
+      end
+      puts "[#{Process.pid}] Unlocked (should never get here)"
+    end
+
+    3.times do
+      if check_lock.call
+        puts "[#{Process.pid}] Sees that lock is acquired"
+        pids.each { |pid|
+          puts "[#{Process.pid}] Killing #{pid}"
+          Process.kill(9, pid)
+        }
+        break
+      else
+        puts "[#{Process.pid}] Waiting for lock to be acquired"
+      end
+
+      sleep 1
+    end
+
+    pids.each { |pid| Process.waitpid(pid) }
+
+    expect(check_lock.call).to be_truthy
+
+    10.times do
+      if check_lock.call
+        puts "[#{Process.pid}] Waiting for lock to expire"
+      else
+        puts "[#{Process.pid}] Lock expired"
+        break
+      end
+
+      sleep 1
+    end
+
+    pids = []
+
+    # Two Processes
+    # The first one acquires the lock.
+    # The second one extends the timeout.
+    2.times do |n|
+      reader, writer = IO.pipe
+      writer.puts n
+
+      pids << fork do
+        Thread.current[:index] = reader.gets.strip.to_i
+        invoke_lock.call do |lock, redis|
+          puts "[#{Process.pid}][#{Thread.current[:index]}] Acquired lock"
+          sleep 10
+        end
+      end
+
+      writer.close
+    end
+
+    3.times do
+      if check_lock.call
+        puts "[#{Process.pid}] Sees that lock is acquired"
+        break
+      else
+        puts "[#{Process.pid}] Waiting for lock to be acquired"
+      end
+
+      sleep 1
+    end
+
+    counter = 0
+
+    puts "[#{Process.pid}] Waiting for lock to expire"
+
+    10.times do
+      if check_lock.call
+        puts "[#{Process.pid}] Sees that lock is still in use"
+      else
+        puts "[#{Process.pid}] Lock expired"
+        break
+      end
+
+      counter += 1
+      sleep 1
+    end
+
+    pids.each { |pid| Process.waitpid(pid) }
+
+    expect(counter).to be < 8
+  end
 end

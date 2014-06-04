@@ -91,7 +91,7 @@ module SETNX
             end
           end
         end
-        client.expire(lock_key, lock_timeout)
+        client.expire(lock_key, lock_timeout) if reply
         result
       end
 
